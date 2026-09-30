@@ -23,3 +23,10 @@ __pycache__/
 *.bak
 Thumbs.db
 .DS_Store
+
+# KiCad local state
+*.kicad_prl
+*-backups/
+*.lck
+*.obj
+*.exe

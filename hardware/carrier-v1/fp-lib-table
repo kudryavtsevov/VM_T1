@@ -1,0 +1,1 @@
+(fp_lib_table (lib (name "VM_T1")(type "KiCad")(uri "${KIPRJMOD}/VM_T1.pretty")(options "")(descr "VM-T1 solder terminals")))

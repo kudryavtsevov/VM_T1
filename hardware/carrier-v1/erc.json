@@ -1,0 +1,14 @@
+{
+    "$schema": "https://schemas.kicad.org/erc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2026-09-30T23:07:47+0300",
+    "kicad_version": "8.0.2",
+    "sheets": [
+        {
+            "path": "/",
+            "uuid_path": "/7eca80fe-53dd-457e-be9c-1b1d2beae742",
+            "violations": []
+        }
+    ],
+    "source": "vm-t1-carrier-v1.kicad_sch"
+}

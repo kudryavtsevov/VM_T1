@@ -1,0 +1,10 @@
+{
+    "$schema": "https://schemas.kicad.org/drc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2026-09-30T23:58:48+0300",
+    "kicad_version": "8.0.2",
+    "schematic_parity": [],
+    "source": "vm-t1-f1q-c3-v1.kicad_pcb",
+    "unconnected_items": [],
+    "violations": []
+}

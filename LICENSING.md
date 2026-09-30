@@ -22,6 +22,11 @@ Apache-2.0 допускает использование, изменение и 
 - [Arduino Core for ESP32](https://github.com/espressif/arduino-esp32): основная лицензия LGPL-2.1; отдельные компоненты имеют собственные условия.
 - [ESP32Servo](https://github.com/madhephaestus/ESP32Servo#license): LGPL-2.1-or-later.
 - [ArduinoJson](https://arduinojson.org/): MIT.
+- [Adafruit BMP280 Library](https://github.com/adafruit/Adafruit_BMP280_Library), 2.6.8: BSD, уведомление в исходниках библиотеки.
+- [Adafruit Unified Sensor](https://github.com/adafruit/Adafruit_Sensor), 1.1.15: Apache-2.0.
+- [Adafruit BusIO](https://github.com/adafruit/Adafruit_BusIO), 1.17.4: MIT.
+
+Новые файлы прошивки, схема и плата-переходник распространяются под Apache-2.0. Библиотеки не включены в репозиторий; устанавливаются отдельно.
 
 Apache-2.0 для проекта не отменяют условий зависимостей.
 Перед распространением готовых бинарных прошивок нужно закрепить версии, проверить

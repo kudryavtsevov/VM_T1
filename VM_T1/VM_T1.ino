@@ -15,28 +15,13 @@
  * limitations under the License.
  *
  * 2026-09-24: Added author attribution and license notice;
- * firmware logic unchanged from the original import.
+ * original import subsequently extended; see docs/F1Q.md.
+ * 2026-09-25: Added optional INA226/BMP280 sensing and experimental F1Q control.
+ * Existing waits now service the limiter; corrected the final DT delay.
  */
 
-/*
- * VM-T1 — таймер для свободнолетающих авиамоделей
- * ESP32-S3 Zero, ESP32 Arduino Core 3.x
- * USB CDC On Boot: Enabled
- *
- * Пины:
- *   Servo S = GPIO 4
- *   Servo R = GPIO 5
- *   Servo W = GPIO 6
- *   BACK    = GPIO 7   (концевик 1, защёлка)
- *   FRONT   = GPIO 8   (концевик 2, крючок)
- *   LED     = GPIO 16
- *   Buzzer  = GPIO 9
- *   OFF btn = GPIO 18
- *   RC DT   = GPIO 3   (кнопка)
- *   VBAT    = GPIO 1
- *
- * RC DT: при нажатой кнопке Servo S/R/W идут в углы RC DT.
- */
+// VM-T1 F1Q: ESP32-C3 Super Mini, Arduino ESP32 Core 2.0.11.
+// Pin assignments are shared with the carrier documentation in BoardPins.h.
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -44,17 +29,9 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 
-// ================== ПИНЫ (ESP32-S3) ==================
-#define PIN_SERVO_S      4
-#define PIN_SERVO_R      5
-#define PIN_SERVO_W      6
-#define PIN_HOOK_BACK    7
-#define PIN_HOOK_FRONT   8
-#define PIN_LED          16
-#define PIN_BUZZER       9
-#define PIN_OFF_BUTTON   18
-#define PIN_RC_DT        3
-#define PIN_VBAT         1
+void servicedDelay(uint32_t ms);
+
+#include "BoardPins.h"
 
 // ================== КОНСТАНТЫ ==================
 const uint32_t DEBOUNCE_MS       = 50;
@@ -177,15 +154,15 @@ void buzzerOff() { digitalWrite(PIN_BUZZER, LOW);  }
 
 void beep(uint16_t ms) {
   buzzerOn();
-  delay(ms);
+  servicedDelay(ms);
   buzzerOff();
 }
 
 void duckQuack() {
-  beep(80);  delay(60);
-  beep(80);  delay(60);
-  beep(800); delay(200);
-  beep(80);  delay(60);
+  beep(80);  servicedDelay(60);
+  beep(80);  servicedDelay(60);
+  beep(800); servicedDelay(200);
+  beep(80);  servicedDelay(60);
   beep(80);
 }
 
@@ -220,24 +197,21 @@ void playMelody(uint8_t idx) {
     default: return;
   }
   for (size_t i = 0; i < len; i++) {
-    if (pat[i]) { buzzerOn(); delay(dur[i]); buzzerOff(); }
-    else        { delay(dur[i]); }
+    if (pat[i]) { buzzerOn(); servicedDelay(dur[i]); buzzerOff(); }
+    else        { servicedDelay(dur[i]); }
   }
 }
 
 // ================== УТИЛИТЫ ==================
-bool hookBackClosed() {
-  bool v = digitalRead(PIN_HOOK_BACK) == LOW;
-  return cfg.hookBackInvert ? !v : v;
-}
-bool hookFrontClosed() {
-  bool v = digitalRead(PIN_HOOK_FRONT) == LOW;
-  return cfg.hookFrontInvert ? !v : v;
-}
+bool hookBackClosed() { return false; } // no tow hooks on F1Q
+bool hookFrontClosed() { return false; }
 bool rcDtPressed() {
   bool v = digitalRead(PIN_RC_DT) == LOW;
   return cfg.rcDtActive ? v : !v;
 }
+
+#include "F1QExtension.h"
+#include "F1QPage.h"
 
 void setServo(uint8_t idx, float cmdDeg) {
   if (idx > 2) return;
@@ -274,13 +248,12 @@ void attachServos() {
 }
 
 float readVbat() {
-  int raw = analogRead(PIN_VBAT);
-  return raw / 4095.0f * 3.3f * 2.0f;
+  return flightSensors.fresh(millis()) ? flightSensors.voltage : NAN;
 }
 
 // ================== ПАМЯТЬ ==================
 void loadConfig() {
-  prefs.begin("vmt1", true);
+  prefs.begin("vmt1-c3", true);
   size_t sz = prefs.getBytesLength("cfg");
   if (sz == sizeof(cfg)) {
     prefs.getBytes("cfg", &cfg, sizeof(cfg));
@@ -291,13 +264,14 @@ void loadConfig() {
   prefs.end();
 }
 void saveConfig() {
-  prefs.begin("vmt1", false);
+  prefs.begin("vmt1-c3", false);
   prefs.putBytes("cfg", &cfg, sizeof(cfg));
   prefs.end();
 }
 
 // ================== Wi-Fi ==================
 void wifiEnable() {
+  if (f1q.enabled && (digitalRead(PIN_ARM)==LOW || flightBusy())) return;
   if (wifiActive) { wifiOnMs = millis(); return; }
   WiFi.mode(WIFI_AP);
   WiFi.softAP(cfg.ssid, cfg.password);
@@ -347,7 +321,7 @@ void runProgram() {
         sectionStartMs = millis();
       }
     } else {
-      uint32_t totalDtMs = totalProgramMs() + (uint32_t)cfg.dtExtraS * 1000;
+      uint32_t totalDtMs = (uint32_t)cfg.dtExtraS * 1000; // Jump delays have already elapsed.
       if (!dtReached && (millis() - sectionStartMs) >= totalDtMs) {
         dtReached = true;
         if (DEBUG) Serial.println("[DT] DT reached");
@@ -368,23 +342,23 @@ void enterState(State s) {
 
   switch (s) {
     case ST_IDLE:
-      digitalWrite(PIN_LED, LOW);
+      statusLed(false);
       applyAngles(cfg.idleS, cfg.idleR, cfg.idleW);
       break;
     case ST_CIRCLING:
-      digitalWrite(PIN_LED, LOW);
+      statusLed(false);
       applyAngles(cfg.circleS, cfg.circleR, cfg.circleW);
       break;
     case ST_TENSION:
-      digitalWrite(PIN_LED, LOW);
+      statusLed(false);
       applyAngles(cfg.tensionS, cfg.tensionR, cfg.tensionW);
       break;
     case ST_READY:
-      digitalWrite(PIN_LED, HIGH);
+      statusLed(true);
       applyAngles(cfg.readyS, cfg.readyR, cfg.readyW);
       break;
     case ST_WORK:
-      digitalWrite(PIN_LED, LOW);
+      statusLed(false);
       activeCount = 0;
       for (uint8_t i = 0; i < NUM_JUMPS; i++)
         if (cfg.jump[i].enabled) activeList[activeCount++] = i;
@@ -405,7 +379,7 @@ void enterState(State s) {
       }
       break;
     case ST_SLEEP_OFF:
-      digitalWrite(PIN_LED, LOW);
+      statusLed(false);
       break;
   }
 }
@@ -437,66 +411,15 @@ void handleStateSounds(uint32_t now) {
 }
 
 // ================== ПЕРЕЗАГРУЗКА ==================
-void checkRebootCondition() {
-  if (rebootFirstRun) {
-    lastHookFrontState = hookFrontClosed();
-    rebootFirstRun = false;
-  }
-  if (hookBackClosed()) {
-    frontHookCount = 0;
-    lastHookFrontState = hookFrontClosed();
-    return;
-  }
-  bool cur = hookFrontClosed();
-  if (cur && !lastHookFrontState) {
-    uint32_t now = millis();
-    if (now - lastFrontRawMs < DEBOUNCE_MS) { lastHookFrontState = cur; return; }
-    lastFrontRawMs = now;
-    if (frontHookCount > 0 && (now - lastFrontMs > cfg.rebootWindowMs)) frontHookCount = 0;
-    frontHookCount++;
-    lastFrontMs = now;
-    beep(50);
-    if (DEBUG) Serial.printf("[REBOOT] FRONT pulse %u / %u\n", frontHookCount, cfg.rebootPulses);
-    if (frontHookCount >= cfg.rebootPulses) {
-      if (DEBUG) Serial.println("[REBOOT] Restart!");
-      frontHookCount = 0;
-      playMelody(cfg.melodyIndex);
-      delay(500);
-      buzzerOff();
-      saveConfig();
-      delay(200);
-      ESP.restart();
-    }
-  }
-  lastHookFrontState = cur;
-}
-
-// ================== Wi-Fi по команде ==================
+// OFF also enables setup Wi-Fi when held 3s with ARM removed.
 void checkWiFiCondition() {
-  if (wifiActive) {
-    if (millis() - wifiOnMs >= WIFI_ON_MS) wifiDisable();
-    return;
-  }
-  if (!hookFrontClosed()) {
-    backPulseCount = 0;
-    lastBackState = hookBackClosed();
-    return;
-  }
-  bool cur = hookBackClosed();
-  if (cur && !lastBackState) {
-    uint32_t now = millis();
-    if (now - lastBackRawMs < DEBOUNCE_MS) { lastBackState = cur; return; }
-    lastBackRawMs = now;
-    if (backPulseCount > 0 && (now - lastBackPulseMs > WIFI_PULSE_WINDOW)) backPulseCount = 0;
-    backPulseCount++;
-    lastBackPulseMs = now;
-    if (DEBUG) Serial.printf("[WIFI-CMD] BACK pulse %u / 3\n", backPulseCount);
-    if (backPulseCount >= 3) {
-      backPulseCount = 0;
-      wifiEnable();
-    }
-  }
-  lastBackState = cur;
+  static uint32_t heldAt=0;
+  static bool handled=false;
+  if (wifiActive && uint32_t(millis()-wifiOnMs)>=WIFI_ON_MS) wifiDisable();
+  if (digitalRead(PIN_ARM)!=LOW && digitalRead(PIN_OFF_BUTTON)==LOW && !flightBusy()) {
+    if (!heldAt) heldAt=millis();
+    if (!handled && uint32_t(millis()-heldAt)>=3000) { handled=true; wifiEnable(); }
+  } else { heldAt=0; handled=false; }
 }
 
 // ================== RC DT ==================
@@ -512,7 +435,7 @@ void handleRcDt() {
   } else if (!pressed && rcDtWasPressed) {
     if (DEBUG) Serial.println("[RC-DT] Released -> return to current state");
     // возвращаем углы текущего состояния
-    enterState(state);
+    if (state != ST_WORK) enterState(state); // Never restart the flight program after RC DT.
   }
 
   rcDtWasPressed = pressed;
@@ -544,8 +467,9 @@ button{width:100%;padding:12px;margin-top:14px;background:#4fc3f7;color:#000;bor
 .sum b{color:#4fc3f7}
 .lock{background:#1a1a1a;padding:8px;border-radius:4px;margin:6px 0}
 </style></head><body>
-<h1>VM-T1 — настройки</h1>
+<h1>VM-T1 F1Q / C3 — настройки</h1>
 <div class="status" id="st">Загрузка...</div>
+<p><a href="/f1q" style="color:#4fc3f7">INA226 / BMP280 / F1Q</a></p>
 <form id="f">
 
 <h2>Сервоприводы</h2>
@@ -557,7 +481,7 @@ button{width:100%;padding:12px;margin-top:14px;background:#4fc3f7;color:#000;bor
   <div><label>Servo Max µs</label><input name="servoMaxUs" type="number"></div>
 </div>
 
-<h2>RC DT (кнопка GPIO 3)</h2>
+<h2>RC DT (кнопка GPIO 7)</h2>
 <label><input type="checkbox" name="rcDtActive" style="width:auto"> Активна (замыкает на GND)</label>
 <div class="srv srv-row" data-srv="0"><label>S</label><input name="rcDtS" type="number" step="0.1"></div>
 <div class="srv srv-row" data-srv="1"><label>R</label><input name="rcDtR" type="number" step="0.1"></div>
@@ -581,9 +505,6 @@ button{width:100%;padding:12px;margin-top:14px;background:#4fc3f7;color:#000;bor
 </div>
 
 <h2>Состояния и звуки</h2>
-<label>Кружение (0=тихо, 1=писк/сек)</label><input name="soundCircling" type="number" min="0" max="1">
-<label>Затяжка (0=тихо)</label><input name="soundTension" type="number" min="0" max="1">
-<label>Готовность (0=тихо, 2=постоянный)</label><input name="soundReady" type="number" min="0" max="2">
 <label>Старт (0=тихо, 1=мелодия)</label><input name="soundStart" type="number" min="0" max="1">
 
 <h2>Углы серв в состояниях</h2>
@@ -591,18 +512,6 @@ button{width:100%;padding:12px;margin-top:14px;background:#4fc3f7;color:#000;bor
   <div class="srv srv-row" data-srv="0"><label>S</label><input name="idleS" type="number" step="0.1"></div>
   <div class="srv srv-row" data-srv="1"><label>R</label><input name="idleR" type="number" step="0.1"></div>
   <div class="srv srv-row" data-srv="2"><label>W</label><input name="idleW" type="number" step="0.1"></div></div>
-<div class="section"><h3>Кружение</h3>
-  <div class="srv srv-row" data-srv="0"><label>S</label><input name="circleS" type="number" step="0.1"></div>
-  <div class="srv srv-row" data-srv="1"><label>R</label><input name="circleR" type="number" step="0.1"></div>
-  <div class="srv srv-row" data-srv="2"><label>W</label><input name="circleW" type="number" step="0.1"></div></div>
-<div class="section"><h3>Затяжка</h3>
-  <div class="srv srv-row" data-srv="0"><label>S</label><input name="tensionS" type="number" step="0.1"></div>
-  <div class="srv srv-row" data-srv="1"><label>R</label><input name="tensionR" type="number" step="0.1"></div>
-  <div class="srv srv-row" data-srv="2"><label>W</label><input name="tensionW" type="number" step="0.1"></div></div>
-<div class="section"><h3>Готовность</h3>
-  <div class="srv srv-row" data-srv="0"><label>S</label><input name="readyS" type="number" step="0.1"></div>
-  <div class="srv srv-row" data-srv="1"><label>R</label><input name="readyR" type="number" step="0.1"></div>
-  <div class="srv srv-row" data-srv="2"><label>W</label><input name="readyW" type="number" step="0.1"></div></div>
 <div class="section"><h3>DT</h3>
   <div class="srv srv-row" data-srv="0"><label>S</label><input name="dtS" type="number" step="0.1"></div>
   <div class="srv srv-row" data-srv="1"><label>R</label><input name="dtR" type="number" step="0.1"></div>
@@ -615,21 +524,6 @@ button{width:100%;padding:12px;margin-top:14px;background:#4fc3f7;color:#000;bor
 <div class="sum">Сумма активных Jump: <b id="sumJg">0</b> мс</div>
 <label>Доп. время, с</label><input name="dtExtraS" type="number" min="0" max="3600">
 <div class="sum">DT_total: <b id="sumTotal">0</b> с</div>
-<label>Аварийное DT, с</label><input name="emergencyDtS" type="number" min="0" max="600">
-
-<h2>Перезагрузка (3×FRONT)</h2>
-<div class="row">
-  <div><label>Замыканий</label><input name="rebootPulses" type="number" min="1" max="10"></div>
-  <div><label>Окно, мс</label><input name="rebootWindowMs" type="number"></div>
-</div>
-<label>Мелодия при перезагрузке</label>
-<select name="melodyIndex">
-  <option value="0">Нет</option><option value="1">Арпеджио</option>
-  <option value="2">Mario</option><option value="3">Star Wars</option>
-  <option value="4">Windows XP</option><option value="5">Та-да</option>
-  <option value="6">Трещотка</option><option value="7">Победная</option>
-</select>
-
 <h2>Прочее</h2>
 <label>Мелодия при включении</label>
 <select name="melodyOnBoot">
@@ -639,15 +533,10 @@ button{width:100%;padding:12px;margin-top:14px;background:#4fc3f7;color:#000;bor
   <option value="6">Трещотка</option><option value="7">Победная</option>
 </select>
 <label><input type="checkbox" name="findBeepEnabled" style="width:auto"> Писк после DT</label>
-<div class="row">
-  <div><label>BACK инверсия</label><input name="hookBackInvert" type="number" min="0" max="1"></div>
-  <div><label>FRONT инверсия</label><input name="hookFrontInvert" type="number" min="0" max="1"></div>
-</div>
-
 <h2>Wi-Fi</h2>
 <label>SSID</label><input name="ssid">
 <label>Пароль</label><input name="password">
-<p style="font-size:12px;color:#aaa">Wi-Fi: FRONT замкнут + 3 замыкания BACK за 2 с → 3 минуты работы.</p>
+<p style="font-size:12px;color:#aaa">Wi-Fi включается на 3 минуты при включении с ARM снятым. Повторно: снять ARM и держать OFF 3 секунды.</p>
 
 <button type="submit">Сохранить и перезагрузить</button>
 </form>
@@ -781,11 +670,13 @@ async function status(){
     const s = await r.json();
     document.getElementById('st').textContent =
       'Состояние: ' + s.state +
-      '\nBACK: ' + (s.backClosed?'замкнут':'разомкнут') +
-      '\nFRONT: ' + (s.frontClosed?'замкнут':'разомкнут') +
       '\nRC DT: ' + (s.rcDt?'НАЖАТА':'отпущена') +
       '\nWi-Fi: ' + (s.wifiActive?'ВКЛ':'выкл') +
-      '\nVBAT: ' + s.vbat + ' В';
+      '\nVBAT: ' + s.vbat + ' В' +
+      '\nINA226: ' + (s.ina226 ? s.voltageV.toFixed(2)+' В / '+s.currentA.toFixed(3)+' А / '+s.powerW.toFixed(1)+' Вт' : 'нет данных') +
+      '\nЭнергия: ' + s.energyJ.toFixed(1)+' / '+s.energyLimitJ.toFixed(1)+' Дж' +
+      '\nВысота: ' + (s.bmp280 ? s.heightM.toFixed(1)+' м; максимум '+s.maxHeightM.toFixed(1)+' м' : 'нет данных') +
+      '\nF1Q: ' + (s.f1qEnabled ? s.motorState+(s.armed?' / готов к отпусканию START':'') : 'выключен');
   }catch(e){}
 }
 load(); status(); setInterval(status, 1000);
@@ -851,6 +742,7 @@ void handleGetConfig() {
 }
 
 void handlePostConfig() {
+  if (f1q.enabled && (digitalRead(PIN_ARM)==LOW || flightBusy())) { server.send(409,"text/plain","Remove ARM jumper"); return; }
   if (!server.hasArg("plain")) { server.send(400); return; }
   JsonDocument doc;
   if (deserializeJson(doc, server.arg("plain"))) { server.send(400, "text/plain", "Bad JSON"); return; }
@@ -925,14 +817,16 @@ void handlePostConfig() {
     }
   }
 
+  if (f1q.enabled) motorStop("configuration restart");
   saveConfig();
   server.send(200, "application/json", "{\"ok\":true}");
-  delay(500);
+  servicedDelay(500);
   ESP.restart();
 }
 
 void handleStatus() {
   JsonDocument doc;
+  addSensorStatus(doc);
   doc["state"]      = stateName(state);
   doc["backClosed"] = hookBackClosed();
   doc["frontClosed"]= hookFrontClosed();
@@ -947,10 +841,9 @@ void handleStatus() {
 // ================== SETUP ==================
 void setup() {
   Serial.begin(115200);
-  if (DEBUG) Serial.println("\n=== VM-T1 booting (ESP32-S3) ===");
+  if (DEBUG) Serial.println("\n=== VM-T1 booting (ESP32-C3) ===");
 
-  pinMode(PIN_HOOK_BACK,  INPUT_PULLUP);
-  pinMode(PIN_HOOK_FRONT, INPUT_PULLUP);
+  digitalWrite(PIN_LED,HIGH);
   pinMode(PIN_LED,        OUTPUT);
   pinMode(PIN_BUZZER,     OUTPUT);
   pinMode(PIN_OFF_BUTTON, INPUT_PULLUP);
@@ -959,12 +852,20 @@ void setup() {
   digitalWrite(PIN_BUZZER, LOW);
 
   loadConfig();
+  beginExtension();
   WiFi.mode(WIFI_OFF);
 
   attachServos();
   applyAngles(cfg.idleS, cfg.idleR, cfg.idleW);
-  delay(300);
+  servicedDelay(300);
 
+  server.on("/f1q", HTTP_GET, [](){server.send_P(200,"text/html",F1Q_HTML);});
+  server.on("/api/f1q", HTTP_GET, handleF1QGet);
+  server.on("/api/f1q", HTTP_POST, handleF1QConfig);
+  server.on("/api/zero-height", HTTP_POST, []() {
+    if (flightBusy() || digitalRead(PIN_ARM)==LOW) { server.send(409); return; }
+    server.send(flightSensors.zeroAltitude()?200:503);
+  });
   server.on("/",            HTTP_GET,  handleRoot);
   server.on("/api/config",  HTTP_GET,  handleGetConfig);
   server.on("/api/config",  HTTP_POST, handlePostConfig);
@@ -979,77 +880,32 @@ void setup() {
 
   enterState(ST_IDLE);
   rcDtWasPressed = rcDtPressed();
+  if (digitalRead(PIN_ARM)!=LOW) wifiEnable();
   if (DEBUG) Serial.println("=== Ready ===\n");
 }
 
 // ================== LOOP ==================
 void loop() {
-  if (wifiActive) server.handleClient();
+  serviceExtension();
+  if (f1q.enabled && digitalRead(PIN_ARM)==LOW && wifiActive) wifiDisable();
+  if (flightStartEvent) { flightStartEvent=false; enterState(ST_WORK); }
+  if (wifiActive && !flightBusy()) server.handleClient();
 
-  checkRebootCondition();
   checkWiFiCondition();
   handleRcDt();   // обработка RC DT — приоритетная
 
   uint32_t now = millis();
-
-  if (digitalRead(PIN_OFF_BUTTON) == LOW) {
-    if (offButtonCount == 0 || now - offButtonPressMs > 50) {
-      offButtonPressMs = now;
-      offButtonCount++;
-      if (offButtonCount >= 3) enterState(ST_SLEEP_OFF);
-    }
-    while (digitalRead(PIN_OFF_BUTTON) == LOW) delay(10);
-  }
-  if (now - offButtonPressMs > 3000) offButtonCount = 0;
 
   handleStateSounds(now);
 
   // Если RC DT нажата — не обрабатываем обычные состояния
   if (rcDtPressed()) {
     applyAngles(cfg.rcDtS, cfg.rcDtR, cfg.rcDtW);
-    delay(5);
+    servicedDelay(5);
     return;
   }
 
-  switch (state) {
-    case ST_IDLE:
-      applyAngles(cfg.idleS, cfg.idleR, cfg.idleW);
-      if (hookBackClosed() && !hookFrontClosed()) enterState(ST_CIRCLING);
-      break;
-    case ST_CIRCLING:
-      applyAngles(cfg.circleS, cfg.circleR, cfg.circleW);
-      if (hookBackClosed() && hookFrontClosed()) enterState(ST_TENSION);
-      break;
-    case ST_TENSION:
-      applyAngles(cfg.tensionS, cfg.tensionR, cfg.tensionW);
-      if (hookBackClosed() && !hookFrontClosed()) {
-        enterState(ST_CIRCLING);
-      } else if (!hookBackClosed() && hookFrontClosed()) {
-        enterState(ST_READY);
-      }
-      break;
-    case ST_READY:
-      applyAngles(cfg.readyS, cfg.readyR, cfg.readyW);
-      if (!hookBackClosed() && !hookFrontClosed()) {
-        if (cfg.soundStart == 1) playMelody(5);
-        enterState(ST_WORK);
-      } else if ((now - stateEnteredMs) > (uint32_t)cfg.emergencyDtS * 1000) {
-        if (cfg.soundStart == 1) playMelody(3);
-        enterState(ST_WORK);
-        currentSlot = activeCount > 0 ? activeCount - 1 : 0;
-        dtReached = true;
-        applyAngles(cfg.dtS, cfg.dtR, cfg.dtW);
-      }
-      break;
-    case ST_WORK:
-      if (!dtReached) runProgram();
-      break;
-    case ST_SLEEP_OFF:
-      digitalWrite(PIN_LED, LOW);
-      digitalWrite(PIN_BUZZER, LOW);
-      if (hookBackClosed()) enterState(ST_IDLE);
-      break;
-  }
-
-  delay(5);
+  // Disabled F1Q is setup-only; never fall back to the F1A hook state machine.
+  if (f1q.enabled && state==ST_WORK && !dtReached) runProgram();
+  servicedDelay(1);
 }
