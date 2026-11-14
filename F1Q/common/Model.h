@@ -7,7 +7,7 @@
 
 namespace f1q {
 constexpr uint32_t MAGIC = 0x31514656;
-constexpr uint8_t VERSION = 1, CHANNEL = 6;
+constexpr uint8_t VERSION = 2, CHANNEL = 6;
 enum Kind : uint8_t { CONFIG = 1, TELEMETRY = 2, DT = 3 };
 enum State : uint8_t { IDLE, ARMED, MOTOR, GLIDE, DEThermalized, FAULT };
 enum Reason : uint8_t { NONE, TIME, ENERGY, REMOTE_DT, LOCAL_DT, SENSOR, OVERCURRENT, UNDERVOLTAGE, FLIGHT_TIME };
@@ -32,6 +32,11 @@ struct Telemetry {
   uint32_t appliedRevision = 0, flightMs = 0, fixAgeMs = UINT32_MAX;
   float voltageV = 0, currentA = 0, energyJ = 0;
   double latitude = 0, longitude = 0;
+  uint32_t flightId = 0, altitudeAgeMs = UINT32_MAX, baroAgeMs = UINT32_MAX;
+  float gpsMslM = 0, gpsRelativeM = 0, baroRelativeM = 0, pressurePa = 0;
+  uint8_t gpsAltitudeValid = 0, gpsRelativeValid = 0, baroValid = 0;
+  uint16_t onboardRecords = 0;
+  uint8_t onboardLogStatus = 0, flightUsed = 0;
   uint8_t state = IDLE, reason = NONE, sensorOk = 0, gpsValid = 0, satellites = 0;
   Config config;
 };

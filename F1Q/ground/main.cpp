@@ -4,9 +4,11 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include "../common/Radio.h"
+#include "FlightLog.h"
 using namespace f1q;
 WebServer server(80);
 Preferences prefs;
+FlightLog flightLog;
 Config desired;
 Telemetry latest;
 bool seen=false, pending=false;
@@ -47,7 +49,8 @@ const char PAGE[] PROGMEM=R"HTML(<!doctype html><html lang="ru"><meta charset="u
 <label><input type="checkbox" id="confirmed"> Сопротивление шунта измерено, показания откалиброваны</label><p><small>Начальное значение 0,001 Ом — пример. Уменьшение шунта «примерно в 10 раз» недостаточно для точного ограничения энергии.</small></p>
 <h3>Сервоприводы S / R / W</h3><label>Маска включения: S=1, R=2, W=4<input id="servoEnabled" type="number" min="0" max="7" required></label><div id="servos"></div>
 <button type="submit">Сохранить и передать на борт</button><button type="button" id="load">Прочитать настройки</button></form><p id="result"></p></section>
-<section><h2>Запуск</h2><p>Подождите минимум 3 секунды после включения. Нажмите кнопку на борту, удерживайте 1 секунду и отпустите — мотор запустится. Для следующего запуска сначала завершите полёт через DT. Проверяйте первый запуск без пропеллера.</p><p>Отсечка мотора: время, энергия (если задана), ток, напряжение или ошибка датчика. Пропадание радиосвязи не отменяет бортовые ограничения. Координаты после потери связи — последняя принятая точка.</p></section>
+<section><h2>Последний полёт</h2><p>Запись на наземной плате, независимо от телефона. Единственный latest.csv содержит принятые пакеты полёта и обе высоты; при новом полёте заменяется. Данные за последнюю секунду могут потеряться при внезапном отключении питания.</p><button id="logsRefresh">Обновить список</button><button id="logsPrepare" hidden>Подготовить память журнала</button><p id="logsStatus"></p><div id="logsList"></div></section>
+<section><h2>Запуск</h2><p>Подождите минимум 3 секунды после включения. Нажмите кнопку на борту, удерживайте 1 секунду и отпустите — мотор запустится. Один запуск на включение; для следующего полёта перезапустите питание. Следующий вылет — после перезапуска питания. Проверяйте первый запуск без пропеллера.</p><p>Отсечка мотора: время, энергия (если задана), ток, напряжение или ошибка датчика. Пропадание радиосвязи не отменяет бортовые ограничения. Координаты после потери связи — последняя принятая точка.</p></section>
 <script>
 const defs=[['shuntOhm','Шунт, Ом',0.00005,0.1,0.00001],['motorMs','Время мотора, мс',100,120000,1],['escOffUs','ESC: стоп, мкс',900,1200,1],['escRunUs','ESC: работа, мкс',901,2000,1],['energyJ','Лимит энергии, Дж (0 — выключен)',0,100000,0.1],['minVoltageV','Минимальное напряжение, В',2,35,0.1],['maxCurrentA','Максимальный ток, А',0.1,200,0.1],['flightMs','DT от запуска, мс',100,3600000,1]];
 for(const [id,title,min,max,step] of defs) fields.insertAdjacentHTML('beforeend',`<label>${title}<input required id="${id}" type="number" min="${min}" max="${max}" step="${step}"></label>`);
@@ -60,11 +63,14 @@ form.onsubmit=async e=>{e.preventDefault();const c={};for(const [id]of defs)c[id
 dt.onclick=async()=>{try{await request('/api/dt',{method:'POST'});dtResult.textContent='Команда отправляется. Ожидается подтверждение состояния DT от борта.'}catch(e){dtResult.textContent=e.message}};
 const states=['Ожидание','Готов к запуску по отпусканию','Мотор','Планирование','DT','Ошибка'];
 const reasons=['—','Лимит времени','Лимит энергии','DT с земли','DT с борта','Ошибка INA226','Превышение тока','Низкое напряжение','Время полёта'];
-async function poll(){try{const s=await request('/api/status');connection.textContent=!s.radioReady?'ESP-NOW не настроен: задайте MAC и ключи перед прошивкой':!s.seen?'Борт ещё не обнаружен':s.link?'Борт на связи':'Связь потеряна; возраст телеметрии '+(s.ageMs/1000).toFixed(1)+' с';document.getElementById('status').textContent=s.seen?`${states[s.state]} · ${reasons[s.reason]}\n${s.voltageV.toFixed(2)} В · ${s.currentA.toFixed(2)} А · ${s.energyJ.toFixed(2)} Дж\nПолёт ${(s.flightMs/1000).toFixed(1)} с · INA226 ${s.sensorOk?'OK':'нет свежих данных'}\nGPS: ${s.gpsValid?s.latitude.toFixed(7)+', '+s.longitude.toFixed(7)+'; возраст '+((s.fixAgeMs+s.ageMs)/1000).toFixed(1)+' с':'нет координат'}\nСпутников: ${s.satellites}`:'Нет данных';if(s.gpsValid){map.hidden=false;map.href=`https://www.openstreetmap.org/?mlat=${s.latitude}&mlon=${s.longitude}#map=17/${s.latitude}/${s.longitude}`}if(s.pending)result.textContent='Ожидается подтверждение ревизии '+s.desiredRevision;else if(s.seen&&!editing)result.textContent='На борту подтверждена ревизия '+s.appliedRevision;if(s.link&&s.reason===3&&s.state===4)dtResult.textContent='Борт подтвердил DT';}catch(e){connection.textContent='Нет связи с наземным веб-сервером'}setTimeout(poll,500)}
-loadConfig();poll();
+async function poll(){try{const s=await request('/api/status');connection.textContent=!s.radioReady?'ESP-NOW не настроен: задайте MAC и ключи перед прошивкой':!s.seen?'Борт ещё не обнаружен':s.link?'Борт на связи':'Связь потеряна; возраст телеметрии '+(s.ageMs/1000).toFixed(1)+' с';document.getElementById('status').textContent=s.seen?`${states[s.state]} · ${reasons[s.reason]}\n${s.voltageV.toFixed(2)} В · ${s.currentA.toFixed(2)} А · ${s.energyJ.toFixed(2)} Дж\nПолёт ${(s.flightMs/1000).toFixed(1)} с · INA226 ${s.sensorOk?'OK':'нет свежих данных'}\nGPS: ${s.gpsValid?s.latitude.toFixed(7)+', '+s.longitude.toFixed(7)+'; возраст '+((s.fixAgeMs+s.ageMs)/1000).toFixed(1)+' с':'нет координат'}\nВысота GPS над уровнем моря: ${s.gpsAltitudeValid && (s.altitudeAgeMs||0)+s.ageMs<2000?s.gpsMslM.toFixed(1)+' м':'нет свежих данных'}\nGPS от старта: ${s.gpsRelativeValid && (s.altitudeAgeMs||0)+s.ageMs<2000?s.gpsRelativeM.toFixed(1)+' м':'нет отсчёта'}\nБарометр от старта: ${s.baroValid && (s.baroAgeMs||0)+s.ageMs<500?s.baroRelativeM.toFixed(1)+' м':'нет свежих данных'}\nСпутников: ${s.satellites}\nБортовой журнал: ${['не готов','запись','заполнен','ошибка'][s.onboardLogStatus]||'нет статуса'}, ${s.onboardRecords||0} записей\n${s.flightUsed?'Запуск использован: для нового вылета перезапустите питание':'Запуск ещё не использован'}`:'Нет данных';if(s.gpsValid){map.hidden=false;map.href=`https://www.openstreetmap.org/?mlat=${s.latitude}&mlon=${s.longitude}#map=17/${s.latitude}/${s.longitude}`}if(s.logError)logsStatus.textContent=s.logError;if(s.pending)result.textContent='Ожидается подтверждение ревизии '+s.desiredRevision;else if(s.seen&&!editing)result.textContent='На борту подтверждена ревизия '+s.appliedRevision;if(s.link&&s.reason===3&&s.state===4)dtResult.textContent='Борт подтвердил DT';}catch(e){connection.textContent='Нет связи с наземным веб-сервером'}setTimeout(poll,500)}
+async function refreshLogs(){try{const d=await request('/api/logs');logsPrepare.hidden=d.ready;logsStatus.textContent=d.error||(d.ready?'Свободно '+Math.round(d.freeBytes/1024)+' КиБ':'Память не подготовлена');logsList.replaceChildren();for(const f of d.files){const p=document.createElement('p'),a=document.createElement('a');a.href='/api/log?name='+encodeURIComponent(f.name);a.textContent=f.name+' ('+Math.round(f.bytes/1024)+' КиБ)';p.append(a);const b=document.createElement('button');b.textContent='Удалить';b.onclick=async()=>{if(!confirm('Удалить '+f.name+'?'))return;try{await request('/api/log?name='+encodeURIComponent(f.name),{method:'DELETE'});refreshLogs()}catch(e){logsStatus.textContent=e.message}};p.append(b);logsList.append(p)}}catch(e){logsStatus.textContent=e.message}}
+logsRefresh.onclick=refreshLogs;logsPrepare.onclick=async()=>{if(!confirm('Форматировать немонтируемую память? Если в ней были журналы, они будут удалены.'))return;try{await request('/api/logs/prepare',{method:'POST'});refreshLogs()}catch(e){logsStatus.textContent=e.message}};
+loadConfig();poll();refreshLogs();
 </script></html>)HTML";
 void setup() {
   Serial.begin(115200);
+  flightLog.begin();
   prefs.begin("f1qground",true);
   if(prefs.getBytesLength("cfg")==sizeof(desired)) { Config c; prefs.getBytes("cfg",&c,sizeof(c)); if(valid(c)) desired=c; }
   prefs.end();
@@ -96,7 +102,48 @@ void setup() {
     d["state"]=latest.state;d["reason"]=latest.reason;d["sensorOk"]=latest.sensorOk;
     d["voltageV"]=latest.voltageV;d["currentA"]=latest.currentA;d["energyJ"]=latest.energyJ;
     d["flightMs"]=latest.flightMs;d["gpsValid"]=latest.gpsValid;d["fixAgeMs"]=latest.fixAgeMs;
+    d["onboardRecords"]=latest.onboardRecords;d["onboardLogStatus"]=latest.onboardLogStatus;d["flightUsed"]=latest.flightUsed;
+    d["gpsMslM"]=latest.gpsMslM;d["gpsRelativeM"]=latest.gpsRelativeM;
+    d["gpsAltitudeValid"]=latest.gpsAltitudeValid;d["gpsRelativeValid"]=latest.gpsRelativeValid;d["altitudeAgeMs"]=latest.altitudeAgeMs;
+    d["baroRelativeM"]=latest.baroRelativeM;d["baroValid"]=latest.baroValid;d["baroAgeMs"]=latest.baroAgeMs;d["pressurePa"]=latest.pressurePa;
+    d["logReady"]=flightLog.mounted;d["logError"]=flightLog.error;
     d["latitude"]=latest.latitude;d["longitude"]=latest.longitude;d["satellites"]=latest.satellites;respond(d);
+  });
+  server.on("/api/logs",HTTP_GET,[]{
+    JsonDocument d;d["ready"]=flightLog.mounted;d["error"]=flightLog.error;
+    auto a=d["files"].to<JsonArray>();
+    if(flightLog.mounted){
+      d["freeBytes"]=LittleFS.totalBytes()-LittleFS.usedBytes();
+      File dir=LittleFS.open("/flights");
+      if(dir && dir.isDirectory()){
+        File f=dir.openNextFile();
+        while(f){auto o=a.add<JsonObject>();String name=f.name();name=name.substring(name.lastIndexOf('/')+1);o["name"]=name;o["bytes"]=f.size();f=dir.openNextFile();}
+      }
+    }
+    respond(d);
+  });
+  server.on("/api/logs/prepare",HTTP_POST,[]{
+    if(seen && (latest.state==MOTOR || latest.state==GLIDE || latest.state==ARMED)) {server.send(409,"text/plain","Board is armed or flying");return;}
+    JsonDocument d;d["ready"]=flightLog.prepare();respond(d);
+  });
+  auto validLogName=[](const String &name){
+    return name=="latest.csv";
+  };
+  server.on("/api/log",HTTP_GET,[validLogName]{
+    if(seen && millis()-receivedAt<15000 && (latest.state==MOTOR || latest.state==GLIDE || latest.state==ARMED)) {server.send(409,"text/plain; charset=utf-8","Выгрузка доступна после полёта или 15 секунд без связи");return;}
+    String name=server.arg("name");
+    if(!flightLog.mounted || !validLogName(name)){server.send(400,"text/plain","Invalid log name");return;}
+    flightLog.flush(millis()+1000);
+    File f=LittleFS.open("/flights/"+name,FILE_READ);
+    if(!f){server.send(404,"text/plain","Log not found");return;}
+    server.sendHeader("Content-Disposition",String("attachment; filename=\"")+name+"\"");
+    server.streamFile(f,"text/csv; charset=utf-8");f.close();
+  });
+  server.on("/api/log",HTTP_DELETE,[validLogName]{
+    if(seen && (latest.state==MOTOR || latest.state==GLIDE || latest.state==ARMED)){server.send(409,"text/plain","Board is armed or flying");return;}
+    String name=server.arg("name");
+    if(!flightLog.mounted || !validLogName(name)){server.send(400,"text/plain","Invalid log name");return;}
+    JsonDocument d;d["deleted"]=LittleFS.remove("/flights/"+name);respond(d);
   });
   server.begin();
 }
@@ -104,6 +151,7 @@ void loop() {
   Packet p;
   while(radio::read(p)) if(p.kind==TELEMETRY) {
     latest=p.telemetry; receivedAt=millis();
+    flightLog.record(p,receivedAt);
     if(!seen && !pending && latest.appliedRevision && valid(latest.config)) desired=latest.config;
     seen=true;
     if(pending && latest.appliedRevision==desired.revision && !memcmp(&latest.config,&desired,sizeof(desired))) pending=false;
@@ -113,5 +161,6 @@ void loop() {
     Packet out;out.kind=CONFIG;out.config=desired;radio::send(out);lastSend=now;
   }
   if(int32_t(dtUntil-now)>0 && now-lastDt>=100) {Packet out;out.kind=DT;radio::send(out);lastDt=now;}
+  flightLog.flush(now);
   server.handleClient();delay(1);
 }

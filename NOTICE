@@ -14,3 +14,6 @@ See LICENSING.md for dependency information.
 ESP-NOW configuration/telemetry, INA226 energy measurement, GPS support,
 build configuration, wiring documentation and software tests.
 The original VM_T1/VM_T1.ino is retained unchanged.
+2026-11-14: Added BMP390 and GPS altitudes, last-flight ground CSV,
+independent 4 Hz onboard barometer log with preflight draft promotion,
+and a radio range design for a 1–3 km airborne target.

@@ -40,3 +40,8 @@ Apache-2.0 для проекта не отменяют условий завис
 
 Ветка F1Q закрепляет зависимости в `platformio.ini`; права на исходный VM-T1
 и уведомления об авторстве сохраняются. Библиотеки не включены в репозиторий.
+
+- [Adafruit BMP3XX Library 2.1.6](https://github.com/adafruit/Adafruit_BMP3XX),
+  Adafruit BusIO и Adafruit Unified Sensor: MIT по файлам библиотек; включённый
+  драйвер Bosch BMP3 имеет собственное уведомление BSD-3-Clause. Транзитивные
+  зависимости закреплены в `platformio.ini`.

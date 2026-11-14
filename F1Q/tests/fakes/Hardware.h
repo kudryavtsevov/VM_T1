@@ -10,12 +10,14 @@ inline bool fakeButton=false,fakeDt=false,fakeSensor=true,fakeReady=true;
 inline uint16_t fakeBus=9600, fakeShunt=1000;
 constexpr int INPUT_PULLUP=0,LOW=0,SERIAL_8N1=0,WIFI_STA=0;
 inline uint32_t millis(){return fakeNow;}
+inline uint32_t esp_random(){static uint32_t id=0;return ++id;}
 inline void delay(int){}
 inline void pinMode(int,int){}
 inline int digitalRead(int pin){return (pin==7?fakeButton:fakeDt)?0:1;}
 struct SerialMock {
   void begin(int,int=0,int=0,int=0){}
   void printf(const char*,...){}
+  void println(const char*){}
   int available(){return 0;}
   int read(){return 0;}
 };
@@ -49,6 +51,7 @@ struct WireMock {
 };
 inline WireMock Wire;
 struct TinyGPSPlus {
+  struct Altitude {bool valid=false;float value=0;uint32_t ageMs=0;bool isValid(){return valid;}float meters(){return value;}uint32_t age(){return ageMs;}} altitude;
   struct Location {bool isValid(){return false;}double lat(){return 0;}double lng(){return 0;}uint32_t age(){return 0;}} location;
   struct Satellites {bool isValid(){return false;}uint32_t value(){return 0;}} satellites;
   void encode(int){}

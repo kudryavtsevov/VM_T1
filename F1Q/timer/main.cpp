@@ -6,6 +6,8 @@
 #include <ESP32Servo.h>
 #include <TinyGPSPlus.h>
 #include "../common/Radio.h"
+#include "Barometer.h"
+#include "OnboardBaroLog.h"
 using namespace f1q;
 // Board: ESP32-S3 Zero. Check physical breakout before assembly.
 constexpr int ESC_PIN=10, BUTTON_PIN=7, DT_PIN=3, SDA_PIN=11, SCL_PIN=12;
@@ -15,11 +17,17 @@ constexpr uint8_t INA=0x40;
 Servo esc, servo[3];
 Preferences prefs;
 TinyGPSPlus gps;
+Barometer barometer;
+OnboardBaroLog onboardLog;
+float groundPressurePa=0, flightPressurePa=0, gpsStartM=0;
+bool gpsStartValid=false;
+uint32_t flightId=0;
 Config cfg;
 Telemetry status;
 State state=IDLE;
 Reason reason=NONE;
 bool configured=false, sensorOk=false, radioOk=false;
+bool flightUsed=false, markerPending=false;
 bool rawButton=false, stableButton=false, armEligible=false;
 uint32_t rawSince=0, pressedAt=0, bootAt=0, flightAt=0;
 uint32_t sampledAt=0, lastPoll=0, lastTelemetry=0;
@@ -97,6 +105,18 @@ void telemetry(uint32_t now) {
   Packet p; p.kind=TELEMETRY;
   auto &t=p.telemetry;
   t.appliedRevision=configured?cfg.revision:0; t.config=cfg;
+  t.flightId=flightId;
+  t.onboardRecords=onboardLog.records();t.onboardLogStatus=onboardLog.status();
+  t.flightUsed=flightUsed;
+  t.altitudeAgeMs=gps.altitude.isValid()?gps.altitude.age():UINT32_MAX;
+  t.gpsAltitudeValid=gps.altitude.isValid() && t.altitudeAgeMs<2000;
+  if(gps.altitude.isValid()) t.gpsMslM=gps.altitude.meters();
+  t.gpsRelativeValid=t.gpsAltitudeValid && gpsStartValid;
+  if(t.gpsRelativeValid) t.gpsRelativeM=t.gpsMslM-gpsStartM;
+  t.baroAgeMs=barometer.valid?now-barometer.sampledAt:UINT32_MAX;
+  t.baroValid=barometer.valid && t.baroAgeMs<500 && flightPressurePa>0;
+  t.pressurePa=barometer.pressurePa;
+  if(t.baroValid) t.baroRelativeM=44330.0f*(1-powf(t.pressurePa/flightPressurePa,0.19029495f));
   t.state=state; t.reason=reason; t.sensorOk=sensorOk && now-sampledAt<=50;
   t.voltageV=voltage; t.currentA=current; t.energyJ=joules;
   t.flightMs=(state==MOTOR || state==GLIDE || state==DEThermalized || state==FAULT)?now-flightAt:0;
@@ -110,6 +130,7 @@ void setup() {
   pinMode(BUTTON_PIN,INPUT_PULLUP); pinMode(DT_PIN,INPUT_PULLUP);
   // Start ESC at minimum before any initialization that can block.
   esc.setPeriodHertz(50); esc.attach(ESC_PIN,900,2000); esc.writeMicroseconds(1000);
+  onboardLog.begin(barometer);
   prefs.begin("vmf1q",true);
   Config stored;
   if (prefs.getBytesLength("cfg")==sizeof(stored) && prefs.getBytes("cfg",&stored,sizeof(stored))==sizeof(stored) && valid(stored)) {
@@ -118,6 +139,7 @@ void setup() {
   prefs.end(); esc.writeMicroseconds(cfg.escOffUs); attachOutputs();
   Wire.begin(SDA_PIN,SCL_PIN); Wire.setClock(400000); Wire.setTimeOut(5);
   writeReg(0,0x4127); // continuous bus+shunt, 1.1 ms each, no averaging
+  barometer.begin();
   Serial1.begin(9600,SERIAL_8N1,GPS_RX,GPS_TX);
   WiFi.mode(WIFI_STA); WiFi.setSleep(false);
   radioOk=radio::begin(GROUND_MAC);
@@ -139,12 +161,17 @@ void loop() {
     stableButton=rawButton;
     if(stableButton) {
       pressedAt=now;
-      armEligible=!localDT && state!=MOTOR && state!=GLIDE && now-bootAt>=3000;
+      armEligible=!localDT && !flightUsed && state!=MOTOR && state!=GLIDE && now-bootAt>=3000;
     } else {
       if(state==ARMED && armEligible && !localDT && sensorOk && now-sampledAt<=50 && voltage>=cfg.minVoltageV && current<cfg.maxCurrentA) {
-        state=MOTOR; reason=NONE; flightAt=now; joules=0;
+        state=MOTOR; flightUsed=true; reason=NONE; flightAt=now; joules=0;
+        flightId=esp_random(); if(!flightId)flightId=1;
+        flightPressurePa=barometer.valid && now-barometer.sampledAt<500?groundPressurePa:0;
+        gpsStartValid=gps.altitude.isValid() && gps.altitude.age()<2000;
+        if(gpsStartValid) gpsStartM=gps.altitude.meters();
         sampledAt=now; previousW=fmaxf(0,voltage*current);
         angles(cfg.motorUs); esc.writeMicroseconds(cfg.escRunUs);
+        markerPending=true;
       } else if(state==ARMED) { state=IDLE; angles(cfg.idleUs); }
       armEligible=false;
     }
@@ -162,6 +189,19 @@ void loop() {
     else if(now-flightAt>=cfg.motorMs) stopMotor(TIME);
   }
   if((state==GLIDE || state==MOTOR) && now-flightAt>=cfg.flightMs) stopMotor(FLIGHT_TIME,true);
-  telemetry(now);
+  barometer.poll(now);
+  if((state==IDLE || state==ARMED || state==DEThermalized || state==FAULT) && barometer.valid && now-barometer.sampledAt<500)
+    groundPressurePa=groundPressurePa>0?0.95f*groundPressurePa+0.05f*barometer.pressurePa:barometer.pressurePa;
+  BaroContext logContext;
+  logContext.pauseWrites=rawButton || stableButton || state==ARMED;
+  logContext.referencePa=flightPressurePa;logContext.state=state;logContext.reason=reason;
+  logContext.gpsValid=gps.altitude.isValid() && gps.altitude.age()<2000;
+  if(logContext.gpsValid){logContext.gpsMslM=gps.altitude.meters();logContext.gpsAt=millis()-gps.altitude.age();}
+  logContext.gpsRelativeValid=logContext.gpsValid && gpsStartValid;
+  if(logContext.gpsRelativeValid)logContext.gpsRelativeM=logContext.gpsMslM-gpsStartM;
+  onboardLog.update(logContext);
+  if(markerPending){onboardLog.markFlightStarted(flightAt);markerPending=false;}
+  onboardLog.serial(state!=MOTOR && state!=GLIDE && state!=ARMED);
+  telemetry(millis());
   delay(1);
 }
