@@ -23,3 +23,6 @@ __pycache__/
 *.bak
 Thumbs.db
 .DS_Store
+
+# Private ESP-NOW pairing keys
+F1Q/common/Pairing.local.h

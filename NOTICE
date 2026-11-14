@@ -9,3 +9,8 @@ Apache License, Version 2.0. See LICENSE.
 
 Third-party dependencies retain their respective licenses.
 See LICENSING.md for dependency information.
+
+2026-11-14: F1Q extension: separate airborne and ground ESP32-S3 firmware,
+ESP-NOW configuration/telemetry, INA226 energy measurement, GPS support,
+build configuration, wiring documentation and software tests.
+The original VM_T1/VM_T1.ino is retained unchanged.
