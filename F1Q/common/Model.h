@@ -10,7 +10,7 @@ constexpr uint32_t MAGIC = 0x31514656;
 constexpr uint8_t VERSION = 2, CHANNEL = 6;
 enum Kind : uint8_t { CONFIG = 1, TELEMETRY = 2, DT = 3 };
 enum State : uint8_t { IDLE, ARMED, MOTOR, GLIDE, DEThermalized, FAULT };
-enum Reason : uint8_t { NONE, TIME, ENERGY, REMOTE_DT, LOCAL_DT, SENSOR, OVERCURRENT, UNDERVOLTAGE, FLIGHT_TIME };
+enum Reason : uint8_t { NONE, TIME, ENERGY, REMOTE_DT, RESERVED_LOCAL_DT, SENSOR, OVERCURRENT, UNDERVOLTAGE, FLIGHT_TIME };
 #pragma pack(push, 1)
 struct Config {
   uint32_t revision = 1;

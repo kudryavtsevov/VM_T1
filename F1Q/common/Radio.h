@@ -4,6 +4,7 @@
 #include "../tests/fakes/Radio.h"
 #else
 #include <WiFi.h>
+#include <atomic>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
@@ -14,7 +15,7 @@ namespace radio {
 static QueueHandle_t inbox;
 static uint8_t peerMac[6];
 static bool ready = false;
-static uint32_t sequence = 0;
+static std::atomic<uint32_t> sequence{0};
 static void receive(const uint8_t *mac, const uint8_t *data, int len) {
   if (len != sizeof(f1q::Packet) || memcmp(mac,peerMac,6)) return;
   f1q::Packet p;

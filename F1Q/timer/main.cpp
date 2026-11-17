@@ -10,7 +10,7 @@
 #include "OnboardBaroLog.h"
 using namespace f1q;
 // Board: ESP32-S3 Zero. Check physical breakout before assembly.
-constexpr int ESC_PIN=10, BUTTON_PIN=7, DT_PIN=3, SDA_PIN=11, SCL_PIN=12;
+constexpr int ESC_PIN=10, BUTTON_PIN=7, SDA_PIN=11, SCL_PIN=12;
 constexpr int GPS_RX=13, GPS_TX=14;
 constexpr int SERVO_PINS[3]={4,5,6};
 constexpr uint8_t INA=0x40;
@@ -127,7 +127,7 @@ void telemetry(uint32_t now) {
 }
 void setup() {
   Serial.begin(115200);
-  pinMode(BUTTON_PIN,INPUT_PULLUP); pinMode(DT_PIN,INPUT_PULLUP);
+  pinMode(BUTTON_PIN,INPUT_PULLUP);
   // Start ESC at minimum before any initialization that can block.
   esc.setPeriodHertz(50); esc.attach(ESC_PIN,900,2000); esc.writeMicroseconds(1000);
   onboardLog.begin(barometer);
@@ -153,17 +153,15 @@ void loop() {
   while(Serial1.available()) gps.encode(Serial1.read());
   sample(now);
   packets();
-  const bool localDT=digitalRead(DT_PIN)==LOW;
-  if (localDT && state!=DEThermalized) { stopMotor(LOCAL_DT,true); armEligible=false; }
   bool pressed=digitalRead(BUTTON_PIN)==LOW;
   if(pressed!=rawButton) { rawButton=pressed; rawSince=now; }
   if(now-rawSince>=40 && stableButton!=rawButton) {
     stableButton=rawButton;
     if(stableButton) {
       pressedAt=now;
-      armEligible=!localDT && !flightUsed && state!=MOTOR && state!=GLIDE && now-bootAt>=3000;
+      armEligible=!flightUsed && state!=MOTOR && state!=GLIDE && now-bootAt>=3000;
     } else {
-      if(state==ARMED && armEligible && !localDT && sensorOk && now-sampledAt<=50 && voltage>=cfg.minVoltageV && current<cfg.maxCurrentA) {
+      if(state==ARMED && armEligible && sensorOk && now-sampledAt<=50 && voltage>=cfg.minVoltageV && current<cfg.maxCurrentA) {
         state=MOTOR; flightUsed=true; reason=NONE; flightAt=now; joules=0;
         flightId=esp_random(); if(!flightId)flightId=1;
         flightPressurePa=barometer.valid && now-barometer.sampledAt<500?groundPressurePa:0;
@@ -178,7 +176,7 @@ void loop() {
   }
   if(stableButton && armEligible && now-pressedAt>=1000 && state!=ARMED && configured &&
       cfg.shuntConfirmed && sensorOk && now-sampledAt<=50 && voltage>=cfg.minVoltageV &&
-      current<cfg.maxCurrentA && !localDT) {
+      current<cfg.maxCurrentA) {
     state=ARMED; reason=NONE; angles(cfg.idleUs);
   }
   if(state==MOTOR) {

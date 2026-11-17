@@ -12,7 +12,7 @@ void remoteDT(){Packet p;p.kind=DT;radio::queue.push_back(p);advance(5);}
 void launch(){flightUsed=false;press();assert(state==ARMED);release();assert(state==MOTOR);assert(esc.pulse==cfg.escRunUs);}
 int main(){
   fakeButton=true;setup();configured=true;cfg.shuntConfirmed=1;
-  advance(4000);release();assert(state==IDLE);assert(esc.pulse==cfg.escOffUs); // boot-held button
+  advance(4000);assert(sensorOk && voltage>12 && voltage<12.01);release();assert(state==IDLE);assert(esc.pulse==cfg.escOffUs); // boot-held button
   cfg.shuntConfirmed=0;press();release();assert(state==IDLE); // uncalibrated sensor
   cfg.shuntConfirmed=1;launch();
   advance(25100);assert(state==GLIDE);assert(reason==TIME);assert(esc.pulse==cfg.escOffUs);
@@ -22,7 +22,8 @@ int main(){
   press();release();assert(state==DEThermalized); // one flight per power session
   launch();fakeSensor=false;advance(5);assert(state==FAULT);assert(reason==SENSOR);assert(esc.pulse==cfg.escOffUs);
   fakeSensor=true;advance(10);cfg.energyJ=3;launch();advance(150);assert(state==GLIDE);assert(reason==ENERGY);
-  remoteDT();cfg.energyJ=0;launch();fakeDt=true;advance(5);assert(state==DEThermalized);assert(reason==LOCAL_DT);fakeDt=false;
+  remoteDT();cfg.energyJ=0;launch();fakeDt=true;advance(5);assert(state==MOTOR); // GPIO 3 on the timer is no longer DT
+  remoteDT();assert(state==DEThermalized && reason==REMOTE_DT);assert(esc.pulse==cfg.escOffUs);fakeDt=false;
   launch();fakeShunt=16000;advance(5);assert(state==FAULT);assert(reason==OVERCURRENT);fakeShunt=1000;advance(10);
   launch();fakeBus=6000;advance(5);assert(state==FAULT);assert(reason==UNDERVOLTAGE);fakeBus=9600;advance(10);
   launch();fakeReady=false;advance(60);assert(state==FAULT);assert(reason==SENSOR);fakeReady=true;advance(10);
